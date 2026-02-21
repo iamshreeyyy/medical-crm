@@ -1,19 +1,13 @@
 import { useState, useEffect } from 'react';
 
 function App() {
-  // ==========================================
-  // --- 1. NEW: AUTHENTICATION STATE ---
-  // ==========================================
-  // Check if we already have a saved token in the browser's memory
   const [token, setToken] = useState(localStorage.getItem('token') || '');
   
-  // States for the Login/Register form
-  const [isLoginMode, setIsLoginMode] = useState(true); // Toggle between Login and Register
+  const [isLoginMode, setIsLoginMode] = useState(true);
   const [authUsername, setAuthUsername] = useState('');
   const [authPassword, setAuthPassword] = useState('');
   const [authError, setAuthError] = useState('');
 
-  // --- EXISTING DASHBOARD STATE ---
   const [patients, setPatients] = useState([]);
   const [appointments, setAppointments] = useState([]);
   const [doctors, setDoctors] = useState([]); 
@@ -28,71 +22,56 @@ function App() {
 
   const [searchTerm, setSearchTerm] = useState('');
 
-  // --- FETCH DATA (Only if logged in!) ---
+  // --- 1. NEW: Helper object to easily attach the token to requests ---
+  const authHeaders = {
+    'Authorization': `Bearer ${token}`
+  };
+
+  const jsonAuthHeaders = {
+    'Content-Type': 'application/json',
+    'Authorization': `Bearer ${token}`
+  };
+
   useEffect(() => {
     if (token) {
-      fetch('http://localhost:5000/api/patients').then(res => res.json()).then(data => setPatients(data));
-      fetch('http://localhost:5000/api/appointments').then(res => res.json()).then(data => setAppointments(data));
-      fetch('http://localhost:5000/api/doctors').then(res => res.json()).then(data => setDoctors(data));
+      // 2. NEW: Pass the headers with the token to every GET request
+      fetch('http://localhost:5000/api/patients', { headers: authHeaders }).then(res => res.json()).then(data => setPatients(data));
+      fetch('http://localhost:5000/api/appointments', { headers: authHeaders }).then(res => res.json()).then(data => setAppointments(data));
+      fetch('http://localhost:5000/api/doctors', { headers: authHeaders }).then(res => res.json()).then(data => setDoctors(data));
     }
-  }, [token]); // The [token] here means: "Run this fetch again if the token changes"
+  }, [token]);
 
-  // ==========================================
-  // --- 2. NEW: AUTHENTICATION FUNCTIONS ---
-  // ==========================================
   const handleAuthSubmit = async (e) => {
     e.preventDefault();
-    setAuthError(''); // Clear any old errors
-
-    // Decide which URL to call based on the mode
+    setAuthError('');
     const url = isLoginMode ? 'http://localhost:5000/api/login' : 'http://localhost:5000/api/register';
 
     try {
       const response = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username: authUsername, password: authPassword }),
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: authUsername, password: authPassword }),
       });
-
       const data = await response.json();
-
-      if (!response.ok) {
-        setAuthError(data.error || 'Something went wrong!');
-        return;
-      }
+      if (!response.ok) { setAuthError(data.error || 'Something went wrong!'); return; }
 
       if (isLoginMode) {
-        // We logged in successfully! Save the badge to the browser and React state
         localStorage.setItem('token', data.token);
         setToken(data.token);
       } else {
-        // We registered successfully! Switch to login mode so they can log in
         alert("Registration successful! Please log in.");
         setIsLoginMode(true);
       }
-      
-      // Clear the form boxes
-      setAuthUsername('');
-      setAuthPassword('');
-
-    } catch (error) {
-      setAuthError("Failed to connect to the server.");
-    }
+      setAuthUsername(''); setAuthPassword('');
+    } catch (error) { setAuthError("Failed to connect to the server."); }
   };
 
-  const handleLogout = () => {
-    // Delete the badge and kick them back to the login screen
-    localStorage.removeItem('token');
-    setToken('');
-  };
+  const handleLogout = () => { localStorage.removeItem('token'); setToken(''); };
 
-  // --- EXISTING DASHBOARD FUNCTIONS ---
   const handlePatientSubmit = async (e) => {
     e.preventDefault();
-    const newPatientData = { name, phone, blood_group: bloodGroup };
     try {
+      // 3. NEW: Pass the token to POST requests
       const response = await fetch('http://localhost:5000/api/patients', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(newPatientData),
+        method: 'POST', headers: jsonAuthHeaders, body: JSON.stringify({ name, phone, blood_group: bloodGroup }),
       });
       const addedPatient = await response.json();
       setPatients([...patients, addedPatient]);
@@ -102,12 +81,11 @@ function App() {
 
   const handleAppointmentSubmit = async (e) => {
     e.preventDefault();
-    const newAppointmentData = { patient_id: selectedPatient, doctor_id: selectedDoctor, appointment_date: appointmentDate };
     try {
       await fetch('http://localhost:5000/api/appointments', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(newAppointmentData),
+        method: 'POST', headers: jsonAuthHeaders, body: JSON.stringify({ patient_id: selectedPatient, doctor_id: selectedDoctor, appointment_date: appointmentDate }),
       });
-      const refresh = await fetch('http://localhost:5000/api/appointments');
+      const refresh = await fetch('http://localhost:5000/api/appointments', { headers: authHeaders });
       const updatedAppointments = await refresh.json();
       setAppointments(updatedAppointments);
       setSelectedPatient(''); setSelectedDoctor(''); setAppointmentDate('');
@@ -116,8 +94,9 @@ function App() {
 
   const handleCompleteAppointment = async (id) => {
     try {
-      await fetch(`http://localhost:5000/api/appointments/${id}/complete`, { method: 'PUT' });
-      const refresh = await fetch('http://localhost:5000/api/appointments');
+      // 4. NEW: Pass the token to PUT requests
+      await fetch(`http://localhost:5000/api/appointments/${id}/complete`, { method: 'PUT', headers: authHeaders });
+      const refresh = await fetch('http://localhost:5000/api/appointments', { headers: authHeaders });
       const updatedAppointments = await refresh.json();
       setAppointments(updatedAppointments);
     } catch (error) { console.error("Error:", error); }
@@ -128,64 +107,33 @@ function App() {
     return patient.name.toLowerCase().includes(searchLower) || patient.phone.includes(searchLower);
   });
 
-  // ==========================================
-  // --- 3. CONDITIONAL RENDERING ---
-  // ==========================================
-
-  // If there is NO token, show the Login Screen
   if (!token) {
     return (
       <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh', backgroundColor: '#f0f2f5', fontFamily: 'sans-serif' }}>
         <div style={{ backgroundColor: 'white', padding: '40px', borderRadius: '8px', boxShadow: '0 4px 12px rgba(0,0,0,0.1)', width: '350px' }}>
-          <h2 style={{ textAlign: 'center', marginBottom: '20px', color: '#333' }}>
-            {isLoginMode ? 'Hospital CRM Login' : 'Register Staff Account'}
-          </h2>
-          
+          <h2 style={{ textAlign: 'center', marginBottom: '20px', color: '#333' }}>{isLoginMode ? 'Hospital CRM Login' : 'Register Staff Account'}</h2>
           {authError && <p style={{ color: 'red', textAlign: 'center', fontSize: '14px' }}>{authError}</p>}
-
           <form onSubmit={handleAuthSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '15px' }}>
-            <input 
-              type="text" placeholder="Username" required value={authUsername} 
-              onChange={(e) => setAuthUsername(e.target.value)} 
-              style={{ padding: '10px', border: '1px solid #ccc', borderRadius: '4px' }} 
-            />
-            <input 
-              type="password" placeholder="Password" required value={authPassword} 
-              onChange={(e) => setAuthPassword(e.target.value)} 
-              style={{ padding: '10px', border: '1px solid #ccc', borderRadius: '4px' }} 
-            />
-            <button type="submit" style={{ padding: '10px', backgroundColor: '#007BFF', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold' }}>
-              {isLoginMode ? 'Login' : 'Register'}
-            </button>
+            <input type="text" placeholder="Username" required value={authUsername} onChange={(e) => setAuthUsername(e.target.value)} style={{ padding: '10px', border: '1px solid #ccc', borderRadius: '4px' }} />
+            <input type="password" placeholder="Password" required value={authPassword} onChange={(e) => setAuthPassword(e.target.value)} style={{ padding: '10px', border: '1px solid #ccc', borderRadius: '4px' }} />
+            <button type="submit" style={{ padding: '10px', backgroundColor: '#007BFF', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold' }}>{isLoginMode ? 'Login' : 'Register'}</button>
           </form>
-
           <p style={{ textAlign: 'center', marginTop: '15px', fontSize: '14px', color: '#666' }}>
             {isLoginMode ? "Don't have an account? " : "Already have an account? "}
-            <span 
-              onClick={() => { setIsLoginMode(!isLoginMode); setAuthError(''); }} 
-              style={{ color: '#007BFF', cursor: 'pointer', textDecoration: 'underline' }}
-            >
-              {isLoginMode ? 'Register here' : 'Login here'}
-            </span>
+            <span onClick={() => { setIsLoginMode(!isLoginMode); setAuthError(''); }} style={{ color: '#007BFF', cursor: 'pointer', textDecoration: 'underline' }}>{isLoginMode ? 'Register here' : 'Login here'}</span>
           </p>
         </div>
       </div>
     );
   }
 
-  // If there IS a token, show the Medical Dashboard
   return (
     <div style={{ padding: '20px', fontFamily: 'sans-serif', maxWidth: '1200px', margin: '0 auto' }}>
-      
-      {/* --- HEADER WITH LOGOUT BUTTON --- */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '30px' }}>
         <h1 style={{ color: '#333', margin: 0 }}>Hospital CRM Dashboard</h1>
-        <button onClick={handleLogout} style={{ padding: '8px 15px', backgroundColor: '#dc3545', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold' }}>
-          Logout
-        </button>
+        <button onClick={handleLogout} style={{ padding: '8px 15px', backgroundColor: '#dc3545', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold' }}>Logout</button>
       </div>
       
-      {/* Analytics Cards */}
       <div style={{ display: 'flex', gap: '20px', marginBottom: '40px' }}>
         <div style={{ flex: 1, padding: '20px', backgroundColor: '#e0f7fa', borderRadius: '8px', textAlign: 'center', boxShadow: '0 2px 4px rgba(0,0,0,0.1)' }}>
           <h3 style={{ margin: '0 0 10px 0', color: '#006064' }}>Total Patients</h3>
@@ -201,7 +149,6 @@ function App() {
         </div>
       </div>
 
-      {/* Forms */}
       <div style={{ display: 'flex', gap: '20px', marginBottom: '30px' }}>
         <div style={{ flex: 1, padding: '20px', border: '1px solid #ccc', borderRadius: '5px', backgroundColor: '#f9f9f9' }}>
           <h3>Register New Patient</h3>
@@ -229,7 +176,6 @@ function App() {
         </div>
       </div>
 
-      {/* Search & Patients */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '40px' }}>
         <h2>Patient Directory</h2>
         <input type="text" placeholder="Search by name or phone..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} style={{ padding: '8px', width: '300px', borderRadius: '4px', border: '1px solid #ccc' }} />
@@ -248,7 +194,6 @@ function App() {
       </table>
       {filteredPatients.length === 0 && <p style={{ textAlign: 'center', marginTop: '20px', color: '#666' }}>No patients found.</p>}
 
-      {/* Appointments */}
       <h2 style={{ marginTop: '50px' }}>Upcoming Appointments</h2>
       <table border="1" cellPadding="10" style={{ borderCollapse: 'collapse', width: '100%', marginTop: '10px' }}>
         <thead style={{ backgroundColor: '#e6f7ff', textAlign: 'left' }}>
@@ -262,11 +207,7 @@ function App() {
               <td>{appt.doctor_name}</td>
               <td>{new Date(appt.appointment_date).toLocaleDateString()}</td>
               <td>
-                <span style={{ 
-                  padding: '5px 10px', backgroundColor: appt.status === 'Completed' ? '#d4edda' : '#fff3cd', 
-                  color: appt.status === 'Completed' ? '#155724' : '#856404', 
-                  borderRadius: '15px', fontSize: '14px', fontWeight: 'bold' 
-                }}>
+                <span style={{ padding: '5px 10px', backgroundColor: appt.status === 'Completed' ? '#d4edda' : '#fff3cd', color: appt.status === 'Completed' ? '#155724' : '#856404', borderRadius: '15px', fontSize: '14px', fontWeight: 'bold' }}>
                   {appt.status}
                 </span>
               </td>
