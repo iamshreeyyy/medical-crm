@@ -4,6 +4,11 @@ const { Pool } = require('pg');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 
+// --- AI SETUP ---
+const { GoogleGenerativeAI } = require('@google/generative-ai');
+// Put your actual Gemini API key inside the quotes below!
+const genAI = new GoogleGenerativeAI('AIzaSyDzUTfckQfr5HFH0BGr8lHBYmV7NxIkRYg'); 
+
 const app = express();
 const PORT = 5000;
 const SECRET_KEY = "super_secret_hospital_key";
@@ -19,32 +24,20 @@ const pool = new Pool({
     port: 5432,
 });
 
-// ==========================================
-// --- 1. NEW: THE BOUNCER (MIDDLEWARE) ---
-// ==========================================
+// --- THE BOUNCER (MIDDLEWARE) ---
 const authenticateToken = (req, res, next) => {
-    // 1. Look for the badge in the request header
     const authHeader = req.headers['authorization'];
-    const token = authHeader && authHeader.split(' ')[1]; // It comes in as "Bearer <token>"
-
-    // 2. If there is no badge, kick them out (401 Unauthorized)
+    const token = authHeader && authHeader.split(' ')[1];
     if (!token) return res.status(401).json({ error: "Access Denied: No Token Provided!" });
 
-    // 3. If there is a badge, verify it isn't fake or expired
     jwt.verify(token, SECRET_KEY, (err, user) => {
         if (err) return res.status(403).json({ error: "Access Denied: Invalid Token!" });
-        
-        // 4. Badge is good! Let them pass to the database route
         req.user = user;
         next(); 
     });
 };
 
-// ==========================================
-// --- 2. PROTECTED MEDICAL ROUTES ---
-// Notice how we put "authenticateToken" in the middle of every route!
-// ==========================================
-
+// --- PROTECTED MEDICAL ROUTES ---
 app.get('/api/patients', authenticateToken, async (req, res) => {
     try {
         const result = await pool.query('SELECT * FROM patients');
@@ -100,23 +93,43 @@ app.put('/api/appointments/:id/complete', authenticateToken, async (req, res) =>
     } catch (err) { res.status(500).send('Server Error'); }
 });
 
-// ==========================================
-// --- PUBLIC AUTHENTICATION ROUTES ---
-// (These DO NOT have the bouncer, because you need to access them to GET the badge!)
-// ==========================================
 
+
+// --- AI TRIAGE ROUTE ---
+app.post('/api/triage', authenticateToken, async (req, res) => {
+    try {
+        const { symptoms } = req.body;
+        
+        const docResult = await pool.query('SELECT DISTINCT specialty FROM doctors');
+        const specialties = docResult.rows.map(r => r.specialty).join(', ');
+
+        const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+        const prompt = `You are an AI medical triage routing agent. Match these patient symptoms: "${symptoms}" to the most appropriate medical specialty from this exact list: [${specialties}]. Reply with ONLY the exact name of the specialty, nothing else.`;
+        
+        const aiResult = await model.generateContent(prompt);
+        const recommendedSpecialty = aiResult.response.text().trim(); 
+
+        const targetDoctor = await pool.query('SELECT * FROM doctors WHERE specialty = $1 LIMIT 1', [recommendedSpecialty]);
+
+        if (targetDoctor.rows.length > 0) {
+            res.json({ doctor_id: targetDoctor.rows[0].id, specialty: recommendedSpecialty, message: `AI routed to ${recommendedSpecialty} based on symptoms.` });
+        } else {
+            res.status(404).json({ error: "No available doctors for this specialty." });
+        }
+    } catch (error) {
+        console.error("AI Triage Error:", error);
+        res.status(500).json({ error: "AI Triage Failed" });
+    }
+});
+
+// --- PUBLIC AUTHENTICATION ROUTES ---
 app.post('/api/register', async (req, res) => {
     try {
         const { username, password } = req.body;
         const hashedPassword = await bcrypt.hash(password, 10);
-        const newUser = await pool.query(
-            'INSERT INTO users (username, password) VALUES ($1, $2) RETURNING id, username',
-            [username, hashedPassword]
-        );
+        const newUser = await pool.query('INSERT INTO users (username, password) VALUES ($1, $2) RETURNING id, username', [username, hashedPassword]);
         res.json({ message: "Staff member registered successfully!", user: newUser.rows[0] });
-    } catch (err) {
-        res.status(500).send('Server Error (Username might already exist)');
-    }
+    } catch (err) { res.status(500).send('Server Error (Username might already exist)'); }
 });
 
 app.post('/api/login', async (req, res) => {
@@ -131,11 +144,25 @@ app.post('/api/login', async (req, res) => {
 
         const token = jwt.sign({ userId: user.id, username: user.username }, SECRET_KEY, { expiresIn: '1h' });
         res.json({ message: "Login successful!", token: token });
-    } catch (err) {
-        res.status(500).send('Server Error');
+    } catch (err) { res.status(500).send('Server Error'); }
+});
+// --- NEW: UPDATE PATIENT NOTES ---
+app.put('/api/patients/:id/notes', authenticateToken, async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { notes } = req.body;
+        
+        await pool.query(
+            "UPDATE patients SET notes = $1 WHERE id = $2",
+            [notes, id]
+        );
+        
+        res.json({ message: "Patient notes updated successfully!" });
+    } catch (err) { 
+        console.error(err.message);
+        res.status(500).send('Server Error updating notes'); 
     }
 });
-
 app.listen(PORT, () => {
-    console.log(`Fully Secured Server is running on http://localhost:${PORT}`);
+    console.log(`Server is running beautifully on http://localhost:${PORT}`);
 });
