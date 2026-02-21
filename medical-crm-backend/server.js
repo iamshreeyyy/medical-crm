@@ -3,11 +3,24 @@ const cors = require('cors');
 const { Pool } = require('pg');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
+const twilio = require('twilio');
 
 // --- AI SETUP ---
 const { GoogleGenerativeAI } = require('@google/generative-ai');
-// Put your actual Gemini API key inside the quotes below!
-const genAI = new GoogleGenerativeAI('AIzaSyDzUTfckQfr5HFH0BGr8lHBYmV7NxIkRYg'); 
+const genAI = new GoogleGenerativeAI('AIzaSyDzUTfckQfr5HFH0BGr8lHBYmV7NxIkRYg'); // Keep your Gemini key here!
+
+// --- NEW: TWILIO SMS SETUP ---
+// To send real texts, you can make a free account at twilio.com and paste your keys here.
+const TWILIO_ACCOUNT_SID = 'YOUR_TWILIO_SID_HERE';
+const TWILIO_AUTH_TOKEN = 'YOUR_TWILIO_TOKEN_HERE';
+const TWILIO_PHONE_NUMBER = '+1234567890'; // Your Twilio Trial Number
+
+let twilioClient;
+try {
+    twilioClient = twilio(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN);
+} catch (error) {
+    console.log("Twilio keys not set. SMS will be simulated in the terminal.");
+}
 
 const app = express();
 const PORT = 5000;
@@ -23,6 +36,29 @@ const pool = new Pool({
     password: '',
     port: 5432,
 });
+
+// --- NEW: SMART SMS SENDER FUNCTION ---
+const sendSMS = async (phoneNumber, message) => {
+    try {
+        if (TWILIO_ACCOUNT_SID === 'YOUR_TWILIO_SID_HERE') {
+            // SIMULATION MODE: If no keys are provided, just print it beautifully to the terminal
+            console.log(`\n📱 --- SIMULATED SMS TO ${phoneNumber} ---`);
+            console.log(`💬 Message: "${message}"`);
+            console.log(`--------------------------------------\n`);
+            return;
+        }
+        
+        // REAL MODE: Send actual text via Twilio
+        await twilioClient.messages.create({
+            body: message,
+            from: TWILIO_PHONE_NUMBER,
+            to: phoneNumber
+        });
+        console.log(`✅ Real SMS successfully sent to ${phoneNumber}`);
+    } catch (error) {
+        console.error(`❌ SMS Failed to send to ${phoneNumber}:`, error.message);
+    }
+};
 
 // --- THE BOUNCER (MIDDLEWARE) ---
 const authenticateToken = (req, res, next) => {
@@ -56,6 +92,15 @@ app.post('/api/patients', authenticateToken, async (req, res) => {
     } catch (err) { res.status(500).send('Server Error'); }
 });
 
+app.put('/api/patients/:id/notes', authenticateToken, async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { notes } = req.body;
+        await pool.query("UPDATE patients SET notes = $1 WHERE id = $2", [notes, id]);
+        res.json({ message: "Patient notes updated successfully!" });
+    } catch (err) { res.status(500).send('Server Error updating notes'); }
+});
+
 app.get('/api/doctors', authenticateToken, async (req, res) => {
     try {
         const result = await pool.query('SELECT * FROM doctors');
@@ -77,29 +122,69 @@ app.get('/api/appointments', authenticateToken, async (req, res) => {
     } catch (err) { res.status(500).send('Server Error'); }
 });
 
+// --- UPDATED: POST APPOINTMENT (Now triggers SMS!) ---
 app.post('/api/appointments', authenticateToken, async (req, res) => {
     try {
         const { patient_id, doctor_id, appointment_date } = req.body;
-        await pool.query('INSERT INTO appointments (patient_id, doctor_id, appointment_date) VALUES ($1, $2, $3)', [patient_id, doctor_id, appointment_date]);
+        
+        // 1. Save appointment to database
+        await pool.query(
+            'INSERT INTO appointments (patient_id, doctor_id, appointment_date) VALUES ($1, $2, $3)', 
+            [patient_id, doctor_id, appointment_date]
+        );
+        
+        // 2. Look up the Patient and Doctor details for the SMS message
+        const patientRes = await pool.query('SELECT name, phone FROM patients WHERE id = $1', [patient_id]);
+        const doctorRes = await pool.query('SELECT name FROM doctors WHERE id = $1', [doctor_id]);
+        
+        if (patientRes.rows.length > 0 && doctorRes.rows.length > 0) {
+            const patient = patientRes.rows[0];
+            const doctor = doctorRes.rows[0];
+            const formattedDate = new Date(appointment_date).toLocaleDateString();
+            
+            // 3. Fire off the SMS!
+            const msg = `Hospital CRM: Hello ${patient.name}, your appointment with ${doctor.name} is confirmed for ${formattedDate}.`;
+            await sendSMS(patient.phone, msg);
+        }
+
         res.json({ message: "Appointment booked successfully!" });
-    } catch (err) { res.status(500).send('Server Error'); }
+    } catch (err) { 
+        console.error(err);
+        res.status(500).send('Server Error'); 
+    }
 });
 
+// --- UPDATED: COMPLETE APPOINTMENT (Now triggers SMS!) ---
 app.put('/api/appointments/:id/complete', authenticateToken, async (req, res) => {
     try {
         const { id } = req.params;
         await pool.query("UPDATE appointments SET status = 'Completed' WHERE id = $1", [id]);
+        
+        // 1. Look up data for the completion text
+        const query = `
+            SELECT patients.name AS p_name, patients.phone AS p_phone, doctors.name AS d_name
+            FROM appointments
+            JOIN patients ON appointments.patient_id = patients.id
+            JOIN doctors ON appointments.doctor_id = doctors.id
+            WHERE appointments.id = $1;
+        `;
+        const details = await pool.query(query, [id]);
+        
+        if (details.rows.length > 0) {
+            const { p_name, p_phone, d_name } = details.rows[0];
+            
+            // 2. Fire off the Thank You SMS!
+            const msg = `Hospital CRM: Thank you ${p_name} for visiting ${d_name}. We wish you a speedy recovery!`;
+            await sendSMS(p_phone, msg);
+        }
+
         res.json({ message: "Appointment marked as completed!" });
     } catch (err) { res.status(500).send('Server Error'); }
 });
 
-
-
-// --- AI TRIAGE ROUTE ---
 app.post('/api/triage', authenticateToken, async (req, res) => {
     try {
         const { symptoms } = req.body;
-        
         const docResult = await pool.query('SELECT DISTINCT specialty FROM doctors');
         const specialties = docResult.rows.map(r => r.specialty).join(', ');
 
@@ -146,23 +231,7 @@ app.post('/api/login', async (req, res) => {
         res.json({ message: "Login successful!", token: token });
     } catch (err) { res.status(500).send('Server Error'); }
 });
-// --- NEW: UPDATE PATIENT NOTES ---
-app.put('/api/patients/:id/notes', authenticateToken, async (req, res) => {
-    try {
-        const { id } = req.params;
-        const { notes } = req.body;
-        
-        await pool.query(
-            "UPDATE patients SET notes = $1 WHERE id = $2",
-            [notes, id]
-        );
-        
-        res.json({ message: "Patient notes updated successfully!" });
-    } catch (err) { 
-        console.error(err.message);
-        res.status(500).send('Server Error updating notes'); 
-    }
-});
+
 app.listen(PORT, () => {
     console.log(`Server is running beautifully on http://localhost:${PORT}`);
 });
