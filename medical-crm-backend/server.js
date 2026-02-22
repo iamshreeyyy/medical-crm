@@ -7,7 +7,7 @@ const twilio = require('twilio');
 
 // --- AI SETUP ---
 const { GoogleGenerativeAI } = require('@google/generative-ai');
-const genAI = new GoogleGenerativeAI('AIzaSyDzUTfckQfr5HFH0BGr8lHBYmV7NxIkRYg'); // Keep your Gemini key here!
+const genAI = new GoogleGenerativeAI(''); // Keep your Gemini key here!
 
 // --- NEW: TWILIO SMS SETUP ---
 // To send real texts, you can make a free account at twilio.com and paste your keys here.
